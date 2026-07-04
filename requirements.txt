@@ -1,0 +1,7 @@
+ultralytics==8.4.87
+opencv-python
+matplotlib
+pandas
+numpy
+scikit-learn
+jupyter
