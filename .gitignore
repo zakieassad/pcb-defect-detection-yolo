@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Datasets locales
+data/raw/
+data/processed/
+
+# Modelos y resultados pesados
+runs/
+*.pt
