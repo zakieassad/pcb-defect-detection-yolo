@@ -219,7 +219,7 @@ __marimo__/
 
 # Datasets locales
 data/raw/
-data/processed/
+# data/processed/
 
 # Modelos y resultados pesados
 runs/
