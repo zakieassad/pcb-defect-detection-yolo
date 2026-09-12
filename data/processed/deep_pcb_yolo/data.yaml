@@ -1,0 +1,13 @@
+path: /home/zassad/pcb-defect-detection-yolo/data/processed/deep_pcb_yolo
+
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: open
+  1: short
+  2: mousebite
+  3: spur
+  4: copper
+  5: pin-hole

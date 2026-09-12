@@ -1,0 +1,90 @@
+{
+    "model_name": "yolo11n_deeppcb",
+    "version": "20260912_135338",
+    "registered_at": "2026-09-12T13:53:38.133263",
+    "architecture": "YOLO11n",
+    "task": "object_detection",
+    "dataset": "DeepPCB",
+    "num_classes": 6,
+    "class_names": [
+        "open",
+        "short",
+        "mousebite",
+        "spur",
+        "copper",
+        "pin-hole"
+    ],
+    "training": {
+        "epochs": 5,
+        "image_size": 640,
+        "batch_size": 16,
+        "seed": 42,
+        "device": "cuda",
+        "training_time_minutes": 2.03
+    },
+    "metrics": {
+        "precision": 0.7028738738720656,
+        "recall": 0.7239228045792613,
+        "mAP50": 0.7892383251829642,
+        "mAP50_95": 0.48398501110690706
+    },
+    "metrics_by_class": [
+        {
+            "class_id": 0,
+            "class_name": "open",
+            "precision": 0.8515197837975036,
+            "recall": 0.6265754941962992,
+            "mAP50": 0.805170218575937,
+            "mAP50_95": 0.43283241397980604
+        },
+        {
+            "class_id": 1,
+            "class_name": "short",
+            "precision": 0.6621571095960571,
+            "recall": 0.4018324327301524,
+            "mAP50": 0.5306870511186439,
+            "mAP50_95": 0.28956876938896364
+        },
+        {
+            "class_id": 2,
+            "class_name": "mousebite",
+            "precision": 0.6232526508441301,
+            "recall": 0.6747060755375665,
+            "mAP50": 0.7178885267423185,
+            "mAP50_95": 0.4101272405512589
+        },
+        {
+            "class_id": 3,
+            "class_name": "spur",
+            "precision": 0.7890487920377192,
+            "recall": 0.7047203305141174,
+            "mAP50": 0.8073490403349337,
+            "mAP50_95": 0.4609763420116854
+        },
+        {
+            "class_id": 4,
+            "class_name": "copper",
+            "precision": 0.7037201887037489,
+            "recall": 0.9633620689655172,
+            "mAP50": 0.951984080190144,
+            "mAP50_95": 0.6783421708375381
+        },
+        {
+            "class_id": 5,
+            "class_name": "pin-hole",
+            "precision": 0.5875447182532343,
+            "recall": 0.9723404255319149,
+            "mAP50": 0.9223510341358084,
+            "mAP50_95": 0.6320631298721905
+        }
+    ],
+    "environment": {
+        "torch_version": "2.11.0+cu128",
+        "ultralytics_version": "8.4.87"
+    },
+    "artifacts": {
+        "pytorch_model": "model.pt",
+        "joblib_model": "model.joblib",
+        "metadata": "metadata.json"
+    }
+}

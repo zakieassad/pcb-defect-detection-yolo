@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT))
 DEFAULT_BUCKET = "mma-cloudproject-tfi-grupo3"
 DEFAULT_BUCKET_PREFIX = "models/registry"
 DEFAULT_REGISTRY_DIR = ROOT / "models" / "registry"
+DEFAULT_DATA_BUCKET_PREFIX = "processed/deep_pcb_yolo"
+DEFAULT_DATA_DIR = ROOT / "data" / "processed" / "deep_pcb_yolo"
 
 
 # ------------------------------------------------------------------
@@ -87,6 +89,110 @@ def resolve_version_dir(
     version_name = bucket_versions[-1]
     download_version_from_bucket(bucket, bucket_prefix, version_name, registry_dir)
     return registry_dir / version_name
+
+
+# ------------------------------------------------------------------
+# Resolución del dataset (local -> bucket como fallback)
+# ------------------------------------------------------------------
+
+def download_dataset_from_bucket(
+    bucket: str,
+    data_bucket_prefix: str,
+    data_dir: Path,
+) -> None:
+    """Descarga el dataset completo desde GCS al directorio local esperado."""
+    uri = f"gs://{bucket}/{data_bucket_prefix.strip('/')}"
+    data_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Descargando dataset desde el bucket: {uri} -> {data_dir.parent}")
+    subprocess.run(
+        ["gcloud", "storage", "cp", "-r", uri, str(data_dir.parent)],
+        check=True,
+    )
+
+
+def resolve_data_yaml(
+    data_arg: str | None,
+    bucket: str,
+    data_bucket_prefix: str,
+    data_dir: Path,
+    allow_bucket: bool,
+) -> Path:
+    """
+    Resuelve el data.yaml a usar en validación.
+
+    Comportamiento:
+    - Si --data apunta a un archivo local existente, lo usa.
+    - Si --data es un gs://.../data.yaml, descarga el dataset completo asociado.
+    - Si no se pasa --data, busca data/processed/deep_pcb_yolo/data.yaml.
+    - Si no está local, descarga automáticamente el dataset desde GCS.
+    """
+
+    # Caso 1: el usuario pasó explícitamente un gs://...
+    if data_arg and data_arg.startswith("gs://"):
+        without_scheme = data_arg[len("gs://"):]
+        bucket_from_uri, _, object_path = without_scheme.partition("/")
+
+        if not bucket_from_uri or not object_path:
+            raise ValueError(f"URI de GCS inválida para --data: {data_arg}")
+
+        yaml_name = Path(object_path).name
+        prefix_from_uri = str(Path(object_path).parent).replace("\\", "/")
+
+        if not allow_bucket:
+            raise FileNotFoundError(
+                "--data apunta a GCS pero --skip-bucket está activo."
+            )
+
+        # Descargamos la carpeta completa, no solo data.yaml, porque YOLO
+        # también necesita images/ y labels/ para validar.
+        target_dir = data_dir
+        download_dataset_from_bucket(
+            bucket=bucket_from_uri,
+            data_bucket_prefix=prefix_from_uri,
+            data_dir=target_dir,
+        )
+
+        local_yaml = target_dir / yaml_name
+        if not local_yaml.exists():
+            raise FileNotFoundError(
+                f"Se descargó el dataset pero no se encontró {local_yaml}"
+            )
+        return local_yaml
+
+    # Caso 2: se pasó una ruta local explícita
+    if data_arg:
+        local_yaml = Path(data_arg)
+        if local_yaml.exists():
+            return local_yaml
+
+        raise FileNotFoundError(
+            f"No se encontró el data.yaml indicado: {local_yaml}"
+        )
+
+    # Caso 3: no se pasó --data; usamos la ubicación local por defecto
+    default_yaml = data_dir / "data.yaml"
+    if default_yaml.exists():
+        return default_yaml
+
+    if not allow_bucket:
+        raise FileNotFoundError(
+            f"No se encontró {default_yaml} y --skip-bucket está activo."
+        )
+
+    # Caso 4: fallback automático al bucket
+    download_dataset_from_bucket(
+        bucket=bucket,
+        data_bucket_prefix=data_bucket_prefix,
+        data_dir=data_dir,
+    )
+
+    if not default_yaml.exists():
+        raise FileNotFoundError(
+            f"El dataset se descargó desde GCS, pero no se encontró {default_yaml}"
+        )
+
+    return default_yaml
 
 
 # ------------------------------------------------------------------
@@ -264,7 +370,9 @@ def main() -> None:
     parser.add_argument("--metadata-joblib", default=None, type=Path, help="Ruta al .joblib con metadatos/modelo (si no se pasa, se arma a partir de --version).")
 
     parser.add_argument("--source", type=Path, help="[modo predict] Imagen o carpeta de imágenes a procesar.")
-    parser.add_argument("--data", type=Path, help="[modo val] Ruta al data.yaml del dataset (train/val/test).")
+    parser.add_argument("--data", default=None, help="[modo val] Ruta local o URI gs://.../data.yaml. Si no se pasa, se usa el dataset local por defecto o se descarga desde el bucket.")
+    parser.add_argument("--data-bucket-prefix", default=DEFAULT_DATA_BUCKET_PREFIX, help="[modo val] Prefijo del dataset dentro del bucket (default: processed/deep_pcb_yolo).")
+    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, type=Path, help="[modo val] Carpeta local donde se guarda/busca el dataset.")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"], help="[modo val] Qué split evaluar.")
     parser.add_argument("--conf", default=0.25, type=float, help="[modo predict] Umbral de confianza mínimo.")
     parser.add_argument("--imgsz", default=640, type=int)
@@ -301,9 +409,26 @@ def main() -> None:
             parser.error("--source es obligatorio en modo predict.")
         run_inference(model, args.source, args.output, args.conf, args.imgsz, args.device)
     else:
-        if not args.data:
-            parser.error("--data es obligatorio en modo val.")
-        run_validation(model, args.data, args.output, metrics_output, args.imgsz, args.split, args.device, model_name)
+        data_yaml = resolve_data_yaml(
+            data_arg=args.data,
+            bucket=args.bucket,
+            data_bucket_prefix=args.data_bucket_prefix,
+            data_dir=args.data_dir,
+            allow_bucket=not args.skip_bucket,
+        )
+
+        print(f"Usando dataset: {data_yaml}\n")
+
+        run_validation(
+            model,
+            data_yaml,
+            args.output,
+            metrics_output,
+            args.imgsz,
+            args.split,
+            args.device,
+            model_name,
+        )
 
 
 if __name__ == "__main__":
