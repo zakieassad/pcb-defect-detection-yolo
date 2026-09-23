@@ -1,7 +1,11 @@
 ultralytics==8.4.87
-opencv-python
+opencv-python-headless
 matplotlib
 pandas
 numpy
 scikit-learn
 jupyter
+fastapi
+uvicorn[standard]
+python-multipart
+google-cloud-storage

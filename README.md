@@ -1,29 +1,14 @@
-# Detección automática de defectos en PCB mediante YOLO
+# PCB Defect Detection with YOLO11 and Google Cloud
 
-Trabajo final de **M1.11 - Deep Learning, Maestría en Management & Analytics, ITBA.**
+Sistema de detección automática de defectos en placas de circuito impreso (PCB) basado en **YOLO11**, desplegado con una arquitectura MLOps sobre **Google Cloud Platform**.
 
-## 1. Descripción del proyecto
+El proyecto cubre el ciclo completo de un modelo de Machine Learning: entrenamiento, evaluación, versionado, registro de artefactos, almacenamiento en Cloud Storage, serving mediante FastAPI, interfaz web con Streamlit, containerización con Docker, despliegue en Cloud Run, observabilidad y preparación para monitoreo de drift.
 
-Este proyecto implementa una solución de detección automática de defectos en PCBs utilizando modelos YOLO.
+---
 
-El objetivo es identificar y localizar defectos de fabricación en imágenes de PCB mediante *bounding boxes*. Se comparan dos variantes de modelo:
+## 1. Objetivo
 
-- YOLO11 Nano
-- YOLO11 Small
-
-Ambos modelos fueron entrenados mediante *fine-tuning* a partir de pesos preentrenados y evaluados sobre el dataset público DeepPCB.
-
-## 2. Propuesta de valor
-
-La inspección visual de PCB es una etapa crítica dentro de los procesos de fabricación y control de calidad de productos electrónicos. La presencia de defectos como cortocircuitos, interrupciones de pistas, perforaciones incompletas o excesos de material puede comprometer el funcionamiento del producto final y generar costos asociados a retrabajos o descartes.
-
-La solución propuesta busca automatizar una primera etapa de inspección visual, permitiendo detectar y clasificar defectos de forma más rápida, consistente y escalable que mediante una revisión completamente manual.
-
-Si bien el trabajo utiliza un dataset público, el pipeline desarrollado podría constituir un punto de partida para futuras aplicaciones reales sobre imágenes propias de PCB o PCBA. Esa adaptación requeriría construir y anotar un dataset específico, lo cual queda fuera del alcance del presente trabajo.
-
-## 3. Dataset
-
-Se utilizó el dataset público **DeepPCB**, que contiene imágenes de placas de circuito impreso con anotaciones de defectos mediante *bounding boxes*.
+El objetivo del proyecto es detectar automáticamente defectos presentes en imágenes de PCB utilizando un modelo de detección de objetos entrenado sobre el dataset **DeepPCB**.
 
 Las clases consideradas son:
 
@@ -34,196 +19,613 @@ Las clases consideradas son:
 - `copper`
 - `pin-hole`
 
-El dataset original no se incluye en este repositorio por cuestiones de tamaño. Puede descargarse desde su repositorio público: [github.com/tangsanli5201/DeepPCB](https://github.com/tangsanli5201/DeepPCB)
+El sistema permite cargar una imagen desde una interfaz web, enviarla al modelo desplegado, obtener las detecciones y visualizar los *bounding boxes* junto con la clase y confianza asociadas.
 
-La estrcutura del dataset y su adaptación al proyecto se documentan en `docs/dataset_structure.md `
+---
 
-## 4. Metodología
+## 2. Arquitectura general
 
-El trabajo se desarrolló siguiendo las siguientes etapas:
+```text
+                 ENTRENAMIENTO
+                      │
+                      ▼
+              YOLO11 + DeepPCB
+                      │
+                      ▼
+        ┌─────────────────────────┐
+        │ Registro de modelo      │
+        │                         │
+        │ model.pt                │
+        │ model.joblib            │
+        │ metadata.json           │
+        └────────────┬────────────┘
+                     │
+                     ▼
+             GOOGLE CLOUD STORAGE
+                     │
+         ┌───────────┴────────────┐
+         │                        │
+ models/registry/          production/images/
+         │                        ▲
+         ▼                        │
+      CLOUD RUN                    │
+         │                        │
+    ┌────┴─────┐                  │
+    │          │                  │
+Streamlit   FastAPI ──────────────┘
+  :8080       :8000
+    │
+    ▼
+  Usuario
+```
 
-1. Exploración del dataset DeepPCB.
-2. Validación de estructura, imágenes y anotaciones.
-3. Conversión de anotaciones originales al formato requerido por YOLO.
-4. Definición de particiones `train`, `val` y `test`.
-5. Fine-tuning de YOLO11 Nano y YOLO11 Small.
-6. Evaluación sobre conjunto de prueba.
-7. Comparación de métricas globales, métricas por clase y costo computacional.
-8. Análisis cualitativo de matrices de confusión, curvas Precision-Recall y ejemplos de predicción.
+La solución desacopla el código de aplicación del artefacto de modelo. La imagen Docker contiene el código y sus dependencias, mientras que los pesos del modelo se recuperan desde Google Cloud Storage en tiempo de ejecución.
 
-## 5. Estructura del repositorio
+---
+
+## 3. Tecnologías utilizadas
+
+- Python 3.12
+- Ultralytics YOLO11
+- PyTorch
+- OpenCV
+- FastAPI
+- Uvicorn
+- Streamlit
+- Docker
+- Google Cloud Storage
+- Google Cloud Build
+- Artifact Registry
+- Cloud Run
+- Cloud Logging
+- Pandas / NumPy
+- Joblib
+
+---
+
+## 4. Estructura del proyecto
 
 ```text
 pcb-defect-detection-yolo/
 │
-├── docs/
-│   └── dataset_structure.md
+├── app/
+│   ├── main.py
+│   ├── model_backend.py
+│   ├── observability.py
+│   └── schemas.py
 │
-├── notebooks/
-│   ├── 01_dataset_exploration.ipynb
-│   ├── 02_dataset_preparation.ipynb
-│   ├── 03_local_training_debug.ipynb
-│   ├── 04_colab_final_training.ipynb
-│   └── 05_results_analysis.ipynb
+├── frontend/
+│   ├── app.py
+│   └── requirements.txt
 │
-├── results/
-│   ├── figures/
-│   └── metrics/
+├── scripts/
+│   └── check_drift.py
 │
-├── src/
+├── data/
+│   └── processed/
+│       └── deep_pcb_yolo/
 │
+├── models/
+│   └── registry/
+│
+├── Dockerfile
+├── start.sh
 ├── requirements.txt
-├── .gitignore
+├── run_yolo_model.py
 └── README.md
 ```
 
-## 6. Notebooks
+> Los modelos y datasets de gran tamaño no deberían almacenarse directamente en Git. Se mantienen en Google Cloud Storage.
 
-### `01_dataset_exploration.ipynb`
+---
 
-Realiza el análisis exploratorio del dataset:
+## 5. Dataset
 
-- estructura de DeepPCB;
-- cantidad de imágenes y anotaciones;
-- distribución por partición;
-- distribución de clases;
-- cantidad de defectos por imagen;
-- tamaño relativo de las *bounding boxes*;
-- visualización de muestras anotadas;
-- definición metodológica de particiones.
+El dataset procesado se almacena en:
 
-### `02_dataset_preparation.ipynb`
+```text
+gs://mma-cloudproject-tfi-grupo3/processed/deep_pcb_yolo/
+```
 
-Convierte DeepPCB al formato YOLO:
+La estructura utilizada por YOLO contempla:
 
-- reconstrucción de particiones;
-- conversión de bounding boxes;
-- generación de estructura compatible con Ultralytics;
-- creación de `data.yaml`;
-- auditoría automática del dataset procesado.
+```text
+deep_pcb_yolo/
+├── data.yaml
+├── images/
+│   ├── train/
+│   ├── val/
+│   └── test/
+└── labels/
+    ├── train/
+    ├── val/
+    └── test/
+```
 
-### `03_local_training_debug.ipynb`
+El script `run_yolo_model.py` puede trabajar con una copia local del dataset o descargarlo desde Google Cloud Storage cuando sea necesario.
 
-Ejecuta una corrida local mínima con YOLO11 Nano para validar el pipeline de entrenamiento.
+---
 
-Esta corrida no se utiliza como resultado final, ya que el entorno local no cuenta con GPU disponible.
+## 6. Registro y versionado del modelo
 
-### `04_colab_final_training.ipynb`
+Cada modelo entrenado se registra en una carpeta identificada por versión y timestamp:
 
-Notebook utilizado para el entrenamiento final en Google Colab con GPU.
+```text
+models/registry/
+└── yolo11n_deeppcb_20260912_135338/
+    ├── model.pt
+    ├── model.joblib
+    └── metadata.json
+```
 
-Incluye:
+En Google Cloud Storage:
 
-- descarga de DeepPCB;
-- preparación del dataset;
-- entrenamiento de YOLO11 Nano;
-- entrenamiento de YOLO11 Small;
-- evaluación sobre test;
-- exportación de métricas y resultados.
+```text
+gs://mma-cloudproject-tfi-grupo3/models/registry/
+```
 
-### `05_results_analysis.ipynb`
+### Artefactos
 
-Consolida y analiza los resultados finales:
+- `model.pt`: artefacto canónico utilizado para inferencia con Ultralytics.
+- `model.joblib`: serialización adicional utilizada como respaldo de información.
+- `metadata.json`: metadatos del modelo, entrenamiento y métricas.
 
-- métricas globales;
-- métricas por clase;
-- matrices de confusión;
-- curvas Precision-Recall;
-- ejemplos cualitativos;
-- costo computacional;
-- conclusiones.
+La versión desplegada puede configurarse mediante la variable de entorno:
 
-## 7. Resultados principales
+```text
+MODEL_VERSION
+```
 
-Los modelos fueron evaluados sobre el conjunto de prueba de DeepPCB.
+Esto permite controlar explícitamente qué modelo utiliza cada revisión de Cloud Run.
 
-| Modelo  | Precision | Recall | mAP@50 | mAP@50:95 |
-| ------- | --------: | -----: | -----: | --------: |
-| YOLO11n |    92.25% | 90.68% | 95.38% |    68.56% |
-| YOLO11s |    93.90% | 91.43% | 96.19% |    72.33% |
+---
 
-YOLO11 Small obtuvo el mejor desempeño global, especialmente en mAP@50:95, donde superó a YOLO11 Nano por aproximadamente 3,77 puntos porcentuales.
+## 7. Métricas del modelo desplegado
 
-Sin embargo, YOLO11 Small también presenta un mayor costo computacional:
+La versión utilizada durante el despliegue obtuvo aproximadamente:
 
-| Modelo  | Parámetros | GFLOPs | Tamaño best.pt | Inferencia |
-| ------- | ----------: | -----: | --------------: | ---------: |
-| YOLO11n |      2.58 M |    6.3 |          5.5 MB | 2.8 ms/img |
-| YOLO11s |      9.42 M |   21.3 |         19.2 MB | 6.0 ms/img |
+| Métrica | Valor |
+|---|---:|
+| Precision | 0.7029 |
+| Recall | 0.7239 |
+| mAP@50 | 0.7892 |
+| mAP@50-95 | 0.4840 |
 
-Por lo tanto, YOLO11 Small resulta preferible si se prioriza desempeño predictivo, mientras que YOLO11 Nano puede ser más conveniente en escenarios con restricciones de hardware o necesidad de inferencia más rápida.
+Además de las métricas globales, el proceso de evaluación permite recuperar métricas por clase.
 
-## 8. Reproducción del proyecto
+---
 
-### 8.1 Crear entorno
+## 8. Ejecución del modelo
+
+El script `run_yolo_model.py` centraliza la carga y ejecución del modelo.
+
+### Predicción
 
 ```bash
-conda create -n pcb-yolo python=3.11 -y
-conda activate pcb-yolo
+python run_yolo_model.py predict --source ruta/a/imagen.jpg
+```
+
+### Validación
+
+```bash
+python run_yolo_model.py val
+```
+
+La validación vuelve a ejecutar el modelo sobre el dataset y genera métricas de evaluación, incluyendo un archivo:
+
+```text
+eval_metrics.json
+```
+
+---
+
+## 9. API de inferencia
+
+La API está implementada con **FastAPI**.
+
+Endpoints principales:
+
+```text
+GET  /health
+POST /predict
+```
+
+### Health check
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+### Predicción
+
+El endpoint `/predict` recibe una imagen mediante `multipart/form-data`.
+
+La respuesta incluye:
+
+- nombre del archivo
+- ancho y alto de la imagen
+- cantidad de detecciones
+- clase detectada
+- confianza
+- coordenadas del bounding box
+- backend utilizado
+- nombre y versión del modelo
+
+Ejemplo conceptual:
+
+```json
+{
+  "filename": "pcb.jpg",
+  "image_width": 640,
+  "image_height": 640,
+  "detection_count": 2,
+  "detections": [
+    {
+      "class_id": 1,
+      "class_name": "short",
+      "confidence": 0.91,
+      "bbox": {
+        "x1": 120.5,
+        "y1": 85.2,
+        "x2": 196.4,
+        "y2": 154.8
+      }
+    }
+  ],
+  "backend": "gcs_local",
+  "model_name": "YOLO11n",
+  "model_version": "yolo11n_deeppcb_20260912_135338"
+}
+```
+
+---
+
+## 10. Frontend
+
+El frontend fue desarrollado con **Streamlit**.
+
+Permite:
+
+- cargar una imagen
+- visualizar la imagen original
+- ejecutar una predicción
+- mostrar cantidad de defectos
+- visualizar clase y confianza
+- dibujar bounding boxes
+- mostrar la imagen anotada
+- visualizar las detecciones en formato tabular
+
+El frontend consume internamente la API FastAPI mediante:
+
+```text
+http://127.0.0.1:8000/predict
+```
+
+---
+
+## 11. Ejecución local
+
+### Instalar dependencias
+
+Desde la raíz del proyecto:
+
+```bash
 pip install -r requirements.txt
+pip install -r frontend/requirements.txt
 ```
 
-### 8.2 Descargar dataset
+### Iniciar API y frontend
 
-Descargar DeepPCB desde:
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+La arquitectura local utiliza:
 
 ```text
-https://github.com/tangsanli5201/DeepPCB
+FastAPI    → 127.0.0.1:8000
+Streamlit  → 0.0.0.0:8080
 ```
 
-y ubicarlo localmente en:
+Para verificar la API:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Para verificar Streamlit:
+
+```bash
+curl http://127.0.0.1:8080/_stcore/health
+```
+
+---
+
+## 12. start.sh
+
+El contenedor ejecuta FastAPI y Streamlit simultáneamente.
+
+```bash
+#!/bin/sh
+
+uvicorn app.main:app \
+  --host 127.0.0.1 \
+  --port 8000 &
+
+sleep 2
+
+streamlit run frontend/app.py \
+  --server.address 0.0.0.0 \
+  --server.port ${PORT:-8080} \
+  --server.headless true \
+  --server.enableCORS false \
+  --server.enableXsrfProtection false \
+  --browser.gatherUsageStats false
+```
+
+FastAPI permanece accesible únicamente dentro del contenedor, mientras que Streamlit escucha en el puerto público proporcionado por Cloud Run.
+
+---
+
+## 13. Docker
+
+La imagen utiliza Python 3.12 slim.
+
+Las dependencias de sistema necesarias para OpenCV incluyen:
 
 ```text
-data/raw/DeepPCB-master/
+libglib2.0-0
+libgl1
+libgomp1
+libxcb1
 ```
 
-La carpeta `data/raw/` está excluida del repositorio mediante `.gitignore`.
+Se utiliza `opencv-python-headless` para evitar dependencias gráficas innecesarias.
 
-### 8.3 Preparar dataset YOLO
+Construcción local:
 
-Ejecutar:
+```bash
+docker build -t pcb-defect-app .
+```
+
+---
+
+## 14. Google Cloud
+
+### Configuración utilizada
+
+```bash
+export PROJECT_ID="mma-cloudproject"
+export REGION="us-central1"
+export BUCKET="mma-cloudproject-tfi-grupo3"
+export REPO="pcb-mlops"
+export SERVICE="pcb-defect-app"
+export MODEL_VERSION="yolo11n_deeppcb_20260912_135338"
+
+export IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:latest"
+```
+
+---
+
+## 15. Artifact Registry
+
+Crear el repositorio si todavía no existe:
+
+```bash
+gcloud artifacts repositories create "${REPO}" \
+  --repository-format=docker \
+  --location="${REGION}" \
+  --description="PCB defect detection MLOps" \
+  --project="${PROJECT_ID}"
+```
+
+---
+
+## 16. Build de la imagen
+
+La construcción y publicación se realiza con Cloud Build:
+
+```bash
+gcloud builds submit \
+  --tag "${IMAGE}" \
+  .
+```
+
+Cada modificación de archivos incluidos en la imagen Docker, por ejemplo `start.sh`, `app/` o `frontend/`, requiere reconstruir la imagen antes de desplegar.
+
+---
+
+## 17. Despliegue en Cloud Run
+
+```bash
+gcloud run deploy "${SERVICE}" \
+  --image "${IMAGE}" \
+  --region "${REGION}" \
+  --platform managed \
+  --allow-unauthenticated \
+  --memory 2Gi \
+  --cpu 2 \
+  --timeout 300 \
+  --set-env-vars MODEL_BUCKET="${BUCKET}",MODEL_PREFIX="models/registry",MODEL_VERSION="${MODEL_VERSION}",MODEL_DEVICE="cpu"
+```
+
+Obtener la URL del servicio:
+
+```bash
+gcloud run services describe "${SERVICE}" \
+  --region="${REGION}" \
+  --format='value(status.url)'
+```
+
+La URL pública corresponde al frontend Streamlit.
+
+---
+
+## 18. Permisos de Google Cloud Storage
+
+La cuenta de servicio utilizada por Cloud Run requiere acceso de lectura al model registry:
 
 ```text
-notebooks/02_dataset_preparation.ipynb
+roles/storage.objectViewer
 ```
 
-Esto genera:
+Para almacenar imágenes enviadas en producción también requiere:
 
 ```text
-data/processed/deep_pcb_yolo/
+roles/storage.objectCreator
 ```
 
-con la estructura compatible con YOLO.
+Se recomienda asignar únicamente los permisos mínimos necesarios.
 
-### 8.4 Entrenamiento
+---
 
-El entrenamiento final fue ejecutado en Google Colab con GPU Tesla T4 utilizando:
+## 19. Persistencia de imágenes de producción
+
+Las imágenes utilizadas para inferencia pueden almacenarse automáticamente en:
 
 ```text
-notebooks/04_colab_final_training.ipynb
+gs://mma-cloudproject-tfi-grupo3/production/images/
 ```
 
-El entorno local fue utilizado únicamente para validación técnica del pipeline.
+Esto permite construir una ventana histórica de inputs reales para monitoreo del comportamiento del sistema.
 
-## 9. Métricas utilizadas
+El flujo de una predicción es:
 
-Las métricas principales fueron:
+```text
+POST /predict
+      ↓
+guardar imagen en GCS
+      ↓
+ejecutar YOLO
+      ↓
+generar detecciones
+      ↓
+registrar evento
+      ↓
+devolver respuesta
+```
 
-- **Precision:** proporción de detecciones realizadas que son correctas.
-- **Recall:** proporción de defectos reales detectados por el modelo.
-- **mAP@50:** promedio de precisión media con umbral IoU 0,50.
-- **mAP@50:95:** promedio de precisión media en múltiples umbrales IoU entre 0,50 y 0,95.
+---
 
-En el contexto de inspección de calidad, el recall resulta especialmente relevante porque un falso negativo implica que un defecto real no fue detectado.
+## 20. Observabilidad
 
-## 10. Limitaciones y trabajo futuro
+La API genera logs estructurados en JSON compatibles con Cloud Logging.
 
-El trabajo fue realizado sobre un dataset público de PCB, no sobre imágenes propias de un entorno productivo real. Por lo tanto, los resultados obtenidos validan experimentalmente el enfoque, pero no garantizan el mismo desempeño en condiciones reales de operación.
+Entre los campos registrados se encuentran:
 
-Como trabajo futuro se propone:
+```text
+latency_ms
+filename
+detection_count
+detected_classes
+model_version
+backend
+```
 
-- evaluar el pipeline sobre imágenes propias de PCB o PCBA;
-- incorporar defectos asociados a componentes electrónicos;
-- analizar tiempos de inferencia en hardware específico;
-- ajustar umbrales de confianza por clase;
-- estudiar falsos positivos y falsos negativos en condiciones reales de inspección.
+Los datos binarios de las imágenes no se almacenan dentro de los logs.
+
+Esto permite analizar:
+
+- latencia
+- volumen de inferencias
+- clases detectadas
+- versión utilizada
+- errores del backend
+
+---
+
+## 21. Monitoreo de drift
+
+El proyecto incorpora una estrategia inicial de **input drift** basada en características visuales de las imágenes.
+
+Variables consideradas:
+
+```text
+brightness
+contrast
+sharpness
+width
+height
+```
+
+Se comparan dos poblaciones:
+
+```text
+dataset de entrenamiento
+        vs.
+imágenes reales de producción
+```
+
+El análisis utiliza **Population Stability Index (PSI)** como indicador descriptivo de cambios en las distribuciones.
+
+Adicionalmente, el sistema puede evolucionar hacia monitoreo de **prediction drift**, comparando la distribución temporal de las clases detectadas.
+
+---
+
+## 22. Reproducibilidad
+
+Para reproducir el sistema deben mantenerse controlados:
+
+- código fuente
+- versiones de dependencias
+- imagen Docker
+- variables de entorno
+- estructura del bucket
+- dataset
+- versiones del modelo
+- metadatos
+- permisos IAM
+- configuración de Cloud Run
+
+El modelo no está embebido en la imagen Docker. Esto permite actualizar el artefacto de Machine Learning independientemente del código de serving.
+
+---
+
+## 23. Flujo MLOps implementado
+
+```text
+Entrenamiento
+      ↓
+Evaluación
+      ↓
+Versionado
+      ↓
+Registro
+      ↓
+Cloud Storage
+      ↓
+Containerización
+      ↓
+Cloud Build
+      ↓
+Artifact Registry
+      ↓
+Cloud Run
+      ↓
+Inferencia
+      ↓
+Observabilidad
+      ↓
+Captura de datos de producción
+      ↓
+Monitoreo de drift
+```
+
+---
+
+## 24. Resultado
+
+El proyecto transforma un experimento de Deep Learning en una solución de Machine Learning desplegable y operable.
+
+El modelo deja de ser únicamente un archivo de pesos para convertirse en un artefacto:
+
+- versionado
+- trazable
+- reproducible
+- desplegable
+- observable
+- desacoplado del código
+- preparado para monitoreo posterior
+
+La interfaz web completa el flujo desde la perspectiva del usuario final, permitiendo cargar imágenes de PCB, ejecutar inferencia y visualizar los defectos identificados por el modelo de forma gráfica.
