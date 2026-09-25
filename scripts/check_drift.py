@@ -1,65 +1,26 @@
-"""
-Chequeo de drift offline para PCB Defect Detection.
-
-Compara características visuales de las imágenes utilizadas como referencia
-con una ventana de imágenes de producción.
-
-Se utiliza Population Stability Index (PSI).
-
-Variables monitoreadas:
-    - brightness: brillo medio
-    - contrast: contraste
-    - sharpness: nitidez
-    - width: ancho
-    - height: alto
-
-Interpretación orientativa:
-    PSI < 0.10      estable
-    PSI 0.10-0.25   atención
-    PSI > 0.25      drift fuerte
-
-Uso:
-
-    # Referencia vs ventana simulada
-    python scripts/check_drift.py
-
-    # Referencia vs imágenes reales de producción
-    python scripts/check_drift.py \
-        --current data/production/images
-
-    # Elegir otra referencia
-    python scripts/check_drift.py \
-        --reference data/processed/deep_pcb_yolo/images/train \
-        --current data/production/images
-"""
-
-from __future__ import annotations
-
 import argparse
 import math
+import tempfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
+from google.cloud import storage
 
 
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
 
-ROOT = Path(__file__).resolve().parents[1]
-
-DEFAULT_REFERENCE = (
-    ROOT
-    / "data"
-    / "processed"
-    / "deep_pcb_yolo"
-    / "images"
-    / "train"
+DEFAULT_REFERENCE_DIR = Path(
+    "data/processed/deep_pcb_yolo/images/train"
 )
 
-DEFAULT_FEATURES = [
+DEFAULT_BUCKET = "mma-cloudproject-tfi-grupo3"
+DEFAULT_PRODUCTION_PREFIX = "production/images"
+
+FEATURES = [
     "brightness",
     "contrast",
     "sharpness",
@@ -67,74 +28,27 @@ DEFAULT_FEATURES = [
     "height",
 ]
 
-SUPPORTED_EXTENSIONS = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".bmp",
-    ".tif",
-    ".tiff",
-}
-
-EPS = 1e-6
-
 
 # ============================================================
-# INTERPRETACIÓN PSI
+# EXTRACCIÓN DE FEATURES
 # ============================================================
 
-def verdict(psi: float) -> str:
-
-    if psi < 0.10:
-        return "estable"
-
-    if psi < 0.25:
-        return "atencion"
-
-    return "DRIFT"
-
-
-# ============================================================
-# EXTRACCIÓN DE CARACTERÍSTICAS DE IMAGEN
-# ============================================================
-
-def extract_image_features(
-    image_path: Path,
-) -> dict | None:
-
+def extract_image_features(image_path: Path) -> dict | None:
     image = cv2.imread(str(image_path))
 
     if image is None:
-        print(
-            f"Advertencia: no se pudo leer "
-            f"{image_path}"
-        )
         return None
 
-    height, width = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    gray = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2GRAY,
-    )
+    height, width = gray.shape
 
-    brightness = float(
-        np.mean(gray)
-    )
-
-    contrast = float(
-        np.std(gray)
-    )
-
-    sharpness = float(
-        cv2.Laplacian(
-            gray,
-            cv2.CV_64F,
-        ).var()
-    )
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
     return {
-        "image": str(image_path),
+        "filename": image_path.name,
         "brightness": brightness,
         "contrast": contrast,
         "sharpness": sharpness,
@@ -143,389 +57,364 @@ def extract_image_features(
     }
 
 
-def extract_dataset_features(
-    directory: Path,
-) -> pd.DataFrame:
-
-    if not directory.exists():
-        raise FileNotFoundError(
-            f"No existe el directorio: {directory}"
-        )
-
-    image_paths = [
-        path
-        for path in directory.rglob("*")
-        if (
-            path.is_file()
-            and path.suffix.lower()
-            in SUPPORTED_EXTENSIONS
-        )
-    ]
-
-    if not image_paths:
-        raise ValueError(
-            f"No se encontraron imágenes en "
-            f"{directory}"
-        )
-
+def extract_features_from_folder(folder: Path) -> pd.DataFrame:
     rows = []
 
-    for image_path in image_paths:
+    extensions = {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".bmp",
+    }
 
-        features = extract_image_features(
-            image_path
-        )
+    files = [
+        p
+        for p in folder.rglob("*")
+        if p.is_file() and p.suffix.lower() in extensions
+    ]
 
-        if features is not None:
-            rows.append(features)
+    for image_path in files:
+        row = extract_image_features(image_path)
 
-    if not rows:
-        raise ValueError(
-            "No se pudo procesar ninguna imagen."
-        )
+        if row is not None:
+            rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+# ============================================================
+# DESCARGA DE IMÁGENES DE PRODUCCIÓN DESDE GCS
+# ============================================================
+
+def download_production_images(
+    bucket_name: str,
+    prefix: str,
+    destination: Path,
+    limit: int | None = None,
+) -> int:
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+
+    blobs = list(
+        client.list_blobs(
+            bucket_name,
+            prefix=prefix,
+        )
+    )
+
+    valid_blobs = [
+        blob
+        for blob in blobs
+        if Path(blob.name).suffix.lower()
+        in {".jpg", ".jpeg", ".png", ".bmp"}
+    ]
+
+    # Usamos las imágenes más recientes
+    valid_blobs.sort(
+        key=lambda blob: blob.updated or blob.time_created,
+        reverse=True,
+    )
+
+    if limit is not None:
+        valid_blobs = valid_blobs[:limit]
+
+    destination.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    for blob in valid_blobs:
+        local_path = destination / Path(blob.name).name
+
+        blob.download_to_filename(
+            str(local_path)
+        )
+
+    return len(valid_blobs)
 
 
 # ============================================================
 # PSI
 # ============================================================
 
-def psi_from_props(
-    ref_prop: pd.Series,
-    cur_prop: pd.Series,
-) -> float:
-
-    total = 0.0
-
-    for bin_key in ref_prop.index:
-
-        ref_p = max(
-            float(
-                ref_prop.get(
-                    bin_key,
-                    0.0,
-                )
-            ),
-            EPS,
-        )
-
-        cur_p = max(
-            float(
-                cur_prop.get(
-                    bin_key,
-                    0.0,
-                )
-            ),
-            EPS,
-        )
-
-        total += (
-            cur_p - ref_p
-        ) * math.log(
-            cur_p / ref_p
-        )
-
-    return total
-
-
-def psi_numeric(
-    ref: pd.Series,
-    cur: pd.Series,
+def calculate_psi(
+    expected: pd.Series,
+    actual: pd.Series,
     bins: int = 10,
 ) -> float:
 
-    ref = pd.to_numeric(
-        ref,
-        errors="coerce",
-    ).dropna()
+    expected = expected.dropna().astype(float)
+    actual = actual.dropna().astype(float)
 
-    cur = pd.to_numeric(
-        cur,
-        errors="coerce",
-    ).dropna()
+    if expected.empty or actual.empty:
+        return math.nan
 
-    quantiles = [
-        i / bins
-        for i in range(bins + 1)
-    ]
-
-    edges = sorted(
-        set(
-            ref.quantile(
-                quantiles
-            ).tolist()
-        )
+    # Límites definidos a partir de la distribución
+    # de referencia.
+    breakpoints = np.quantile(
+        expected,
+        np.linspace(0, 1, bins + 1),
     )
 
-    # Variable prácticamente constante
-    if len(edges) < 2:
+    # Evitamos límites repetidos.
+    breakpoints = np.unique(breakpoints)
+
+    if len(breakpoints) < 3:
         return 0.0
 
-    edges[0] = -math.inf
-    edges[-1] = math.inf
-
-    ref_binned = pd.cut(
-        ref,
-        bins=edges,
-        include_lowest=True,
+    expected_counts, _ = np.histogram(
+        expected,
+        bins=breakpoints,
     )
 
-    cur_binned = pd.cut(
-        cur,
-        bins=edges,
-        include_lowest=True,
+    actual_counts, _ = np.histogram(
+        actual,
+        bins=breakpoints,
     )
 
-    ref_prop = (
-        ref_binned
-        .value_counts(
-            normalize=True,
-            sort=False,
+    expected_pct = (
+        expected_counts /
+        max(expected_counts.sum(), 1)
+    )
+
+    actual_pct = (
+        actual_counts /
+        max(actual_counts.sum(), 1)
+    )
+
+    epsilon = 1e-6
+
+    expected_pct = np.clip(
+        expected_pct,
+        epsilon,
+        None,
+    )
+
+    actual_pct = np.clip(
+        actual_pct,
+        epsilon,
+        None,
+    )
+
+    psi = np.sum(
+        (actual_pct - expected_pct)
+        * np.log(
+            actual_pct / expected_pct
         )
     )
 
-    cur_prop = (
-        cur_binned
-        .value_counts(
-            normalize=True,
-            sort=False,
-        )
-    )
-
-    return psi_from_props(
-        ref_prop,
-        cur_prop,
-    )
+    return float(psi)
 
 
 # ============================================================
-# SIMULACIÓN DE PRODUCCIÓN
+# INTERPRETACIÓN
 # ============================================================
 
-def simulate_production(
-    reference: pd.DataFrame,
-    seed: int = 7,
-) -> pd.DataFrame:
-    """
-    Genera una ventana sintética con cambios visuales.
+def classify_psi(psi: float) -> str:
+    if math.isnan(psi):
+        return "SIN DATOS"
 
-    Sirve solamente para demostrar el mecanismo de drift
-    cuando todavía no existen imágenes reales de producción.
-    """
+    if psi < 0.10:
+        return "ESTABLE"
 
-    sample = reference.sample(
-        n=len(reference),
-        replace=True,
-        random_state=seed,
-    ).copy()
+    if psi < 0.25:
+        return "ATENCIÓN"
 
-    rng = np.random.default_rng(seed)
-
-    # Simulamos imágenes algo más claras
-    sample["brightness"] *= 1.15
-
-    # Algo más de contraste
-    sample["contrast"] *= 1.10
-
-    # Algo más borrosas
-    sample["sharpness"] *= 0.60
-
-    # Pequeña variabilidad
-    sample["brightness"] += rng.normal(
-        0,
-        3,
-        len(sample),
-    )
-
-    return sample
+    return "DRIFT"
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-def main() -> None:
-
+def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Chequeo de drift PSI "
-            "para PCB Defect Detection."
+            "Monitoreo de input drift para imágenes de PCB."
         )
     )
 
     parser.add_argument(
         "--reference",
-        type=Path,
-        default=DEFAULT_REFERENCE,
+        default=str(DEFAULT_REFERENCE_DIR),
+        help="Carpeta con imágenes de referencia.",
+    )
+
+    parser.add_argument(
+        "--bucket",
+        default=DEFAULT_BUCKET,
+        help="Bucket de Google Cloud Storage.",
+    )
+
+    parser.add_argument(
+        "--production-prefix",
+        default=DEFAULT_PRODUCTION_PREFIX,
+        help="Prefijo de imágenes de producción en GCS.",
+    )
+
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=200,
         help=(
-            "Carpeta de imágenes de referencia. "
-            "Por defecto usa images/train."
+            "Cantidad máxima de imágenes de producción "
+            "a utilizar."
         ),
     )
 
     parser.add_argument(
-        "--current",
-        type=Path,
-        default=None,
-        help=(
-            "Carpeta con imágenes actuales de producción. "
-            "Si no se pasa, se simula drift."
-        ),
-    )
-
-    parser.add_argument(
-        "--features",
-        nargs="*",
-        default=DEFAULT_FEATURES,
+        "--output",
+        default="drift_report.csv",
+        help="Archivo CSV de salida.",
     )
 
     args = parser.parse_args()
 
-    # --------------------------------------------------------
-    # Referencia
-    # --------------------------------------------------------
+    reference_dir = Path(args.reference)
+
+    if not reference_dir.exists():
+        raise FileNotFoundError(
+            f"No existe la carpeta de referencia: "
+            f"{reference_dir}"
+        )
+
+    print("=" * 70)
+    print("PCB INPUT DRIFT CHECK")
+    print("=" * 70)
+
+    print()
+    print(
+        f"Referencia: {reference_dir}"
+    )
+
+    reference_df = extract_features_from_folder(
+        reference_dir
+    )
 
     print(
-        "Extrayendo características "
-        "de referencia..."
+        f"Imágenes de referencia: "
+        f"{len(reference_df)}"
     )
 
-    reference = extract_dataset_features(
-        args.reference
-    )
+    if reference_df.empty:
+        raise RuntimeError(
+            "No se encontraron imágenes "
+            "válidas de referencia."
+        )
 
-    # --------------------------------------------------------
-    # Producción
-    # --------------------------------------------------------
+    # Directorio temporal para producción
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        production_dir = Path(tmp_dir)
 
-    if args.current is not None:
+        print()
+        print(
+            "Descargando imágenes de producción "
+            "desde GCS..."
+        )
+
+        n_downloaded = download_production_images(
+            bucket_name=args.bucket,
+            prefix=args.production_prefix,
+            destination=production_dir,
+            limit=args.limit,
+        )
 
         print(
-            "Extrayendo características "
-            "de producción..."
+            f"Imágenes descargadas: "
+            f"{n_downloaded}"
         )
 
-        current = extract_dataset_features(
-            args.current
-        )
-
-        origen = str(args.current)
-
-    else:
-
-        current = simulate_production(
-            reference
-        )
-
-        origen = (
-            "ventana simulada "
-            "(más clara y menos nítida)"
-        )
-
-    # --------------------------------------------------------
-    # Resumen
-    # --------------------------------------------------------
-
-    print()
-    print(
-        f"Referencia : "
-        f"{args.reference} "
-        f"({len(reference)} imágenes)"
-    )
-
-    print(
-        f"Producción : "
-        f"{origen} "
-        f"({len(current)} imágenes)"
-    )
-
-    print()
-
-    print(
-        f"  {'feature':<16} "
-        f"{'PSI':>8}   "
-        f"veredicto"
-    )
-
-    print(
-        f"  {'-' * 16} "
-        f"{'-' * 8}   "
-        f"{'-' * 9}"
-    )
-
-    peor = 0.0
-
-    # --------------------------------------------------------
-    # PSI por feature
-    # --------------------------------------------------------
-
-    for feature in args.features:
-
-        if (
-            feature not in reference.columns
-            or feature not in current.columns
-        ):
-
-            print(
-                f"  {feature:<16} "
-                f"{'--':>8}   "
-                f"(no disponible)"
+        if n_downloaded == 0:
+            raise RuntimeError(
+                "No se encontraron imágenes "
+                "de producción en GCS."
             )
 
-            continue
-
-        psi = psi_numeric(
-            reference[feature],
-            current[feature],
-        )
-
-        peor = max(
-            peor,
-            psi,
+        production_df = (
+            extract_features_from_folder(
+                production_dir
+            )
         )
 
         print(
-            f"  {feature:<16} "
-            f"{psi:8.3f}   "
-            f"{verdict(psi)}"
+            f"Imágenes válidas de producción: "
+            f"{len(production_df)}"
         )
 
-    # --------------------------------------------------------
-    # Resultado global
-    # --------------------------------------------------------
+        results = []
 
-    print()
+        for feature in FEATURES:
+            psi = calculate_psi(
+                reference_df[feature],
+                production_df[feature],
+            )
 
-    if peor >= 0.25:
+            status = classify_psi(psi)
+
+            results.append(
+                {
+                    "feature": feature,
+                    "psi": psi,
+                    "status": status,
+                    "reference_mean": (
+                        reference_df[feature].mean()
+                    ),
+                    "production_mean": (
+                        production_df[feature].mean()
+                    ),
+                }
+            )
+
+        report_df = pd.DataFrame(results)
+
+        print()
+        print("=" * 70)
+        print("RESULTADOS")
+        print("=" * 70)
+        print()
 
         print(
-            f"  -> PSI máximo {peor:.3f}: "
-            "hay drift visual."
+            report_df.to_string(
+                index=False,
+                float_format=lambda x: f"{x:.4f}",
+            )
         )
 
+        report_df.to_csv(
+            args.output,
+            index=False,
+        )
+
+        print()
         print(
-            "     Revisar las imágenes nuevas "
-            "y evaluar el desempeño del modelo."
+            f"Reporte guardado en: "
+            f"{args.output}"
         )
 
-    elif peor >= 0.10:
+        print()
 
-        print(
-            f"  -> PSI máximo {peor:.3f}: "
-            "la distribución comenzó a moverse."
-        )
+        drift_features = report_df[
+            report_df["status"] == "DRIFT"
+        ]
 
-        print(
-            "     Conviene continuar monitoreando."
-        )
+        if drift_features.empty:
+            print(
+                "Resultado general: "
+                "no se detectó drift crítico."
+            )
+        else:
+            print(
+                "Resultado general: "
+                "se detectó drift en:"
+            )
 
-    else:
-
-        print(
-            f"  -> PSI máximo {peor:.3f}: "
-            "distribución estable."
-        )
+            for feature in drift_features[
+                "feature"
+            ]:
+                print(
+                    f" - {feature}"
+                )
 
 
 if __name__ == "__main__":
